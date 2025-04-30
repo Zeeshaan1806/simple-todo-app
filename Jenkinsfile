@@ -15,20 +15,24 @@ pipeline {
             }
         }
         
-        stage('SAST - SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh '''
-                    sonar-scanner \
-                      -Dsonar.projectKey=simple-todo-app \
-                      -Dsonar.sources=. \
-                      -Dsonar.host.url=http://localhost:9000 \
-                      -Dsonar.login=$SONAR_TOKEN
-                    '''
-                }
-                echo 'SonarQube analysis complete'
-            }
+       stage('SAST - SonarQube Analysis') {
+  steps {
+    withSonarQubeEnv('SonarQube') {
+      withCredentials([string(credentialsId: 'sqa_7df16d680b5187bcd44e8b324327aca0dbe3d24b', variable: 'SONAR_TOKEN')]) {
+        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+          sh '''
+          sonar-scanner \
+            -Dsonar.projectKey=simple-todo-app \
+            -Dsonar.sources=. \
+            -Dsonar.host.url=http://localhost:9000 \
+            -Dsonar.login=$SONAR_TOKEN
+          '''
         }
+      }
+    }
+    waitForQualityGate abortPipeline: true
+  }
+}
         
         stage('SCA - Dependency Check') {
             steps {
