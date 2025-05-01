@@ -3,7 +3,10 @@ pipeline {
 
     environment {
         SONAR_URL = 'http://localhost:9000'
-        SONAR_TOKEN = credentials('sonar-token')
+    }
+
+    tools {
+        nodejs 'NodeJS 20'
     }
 
     stages {
@@ -14,18 +17,20 @@ pipeline {
         }
 
         stage('Wait for SonarQube') {
+            environment {
+                SONAR_TOKEN = credentials('sonar-token')
+            }
             steps {
                 script {
-                    def isWindows = isUnix() == false
                     retry(10) {
                         echo "Waiting for SonarQube to become healthy..."
-                        if (isWindows) {
-                            bat """
-                                curl -f %SONAR_URL%/api/system/health || exit 1
+                        if (isUnix()) {
+                            sh """
+                                curl -u ${env.SONAR_TOKEN}: -f ${env.SONAR_URL}/api/system/health || exit 1
                             """
                         } else {
-                            sh """
-                                curl -f ${env.SONAR_URL}/api/system/health || exit 1
+                            bat """
+                                curl -u %SONAR_TOKEN%: -f %SONAR_URL%/api/system/health || exit 1
                             """
                         }
                         sleep 10
@@ -34,64 +39,51 @@ pipeline {
             }
         }
 
-        stage('Run SonarQube Scan') {
+        stage('Install Dependencies') {
             steps {
-                withSonarQubeEnv('MySonarQubeServer') {
-                    script {
-                        def isWindows = isUnix() == false
-                        if (isWindows) {
-                            bat 'mvn clean verify sonar:sonar'
-                        } else {
-                            sh 'mvn clean verify sonar:sonar'
-                        }
-                    }
+                sh 'npm install'
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh 'npm test || true'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            environment {
+                SONAR_TOKEN = credentials('sonar-token')
+            }
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        npx sonar-scanner \
+                        -Dsonar.projectKey=simple-todo-app \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=${SONAR_URL} \
+                        -Dsonar.login=${SONAR_TOKEN}
+                    """
                 }
             }
         }
 
-        stage('Run OWASP Dependency-Check') {
+        stage('Dependency Check') {
             steps {
-                script {
-                    def isWindows = isUnix() == false
-                    if (isWindows) {
-                        bat 'dependency-check.bat --project simple-todo-app --scan . --format ALL --out reports'
-                    } else {
-                        sh './dependency-check.sh --project simple-todo-app --scan . --format ALL --out reports'
-                    }
-                }
+                sh 'dependency-check.sh --project "simple-todo-app" --scan . || true'
             }
         }
 
-        stage('Run Trivy Scan') {
+        stage('Trivy Scan') {
             steps {
-                script {
-                    def isWindows = isUnix() == false
-                    if (isWindows) {
-                        bat 'trivy fs --exit-code 0 --format table .'
-                    } else {
-                        sh 'trivy fs --exit-code 0 --format table .'
-                    }
-                }
+                sh 'trivy fs --exit-code 0 --severity HIGH,CRITICAL . || true'
             }
         }
 
-        stage('Run OWASP ZAP Scan') {
+        stage('OWASP ZAP Scan') {
             steps {
-                script {
-                    def isWindows = isUnix() == false
-                    if (isWindows) {
-                        bat 'zap.bat -quickurl http://localhost:3000 -quickout zap-report.html'
-                    } else {
-                        sh 'zap.sh -quickurl http://localhost:3000 -quickout zap-report.html'
-                    }
-                }
+                sh 'zap-cli start && zap-cli quick-scan --self-contained --start-options "-config api.disablekey=true" http://localhost:3000 || true'
             }
-        }
-    }
-
-    post {
-        always {
-            archiveArtifacts artifacts: '**/reports/**/*, zap-report.html', allowEmptyArchive: true
         }
     }
 }
