@@ -1,121 +1,126 @@
 pipeline {
     agent any
-    
+
     environment {
         DOCKER_IMAGE = 'simple-todo-app'
-        DOCKER_TAG = "${env.BUILD_NUMBER}"
-        APP_PORT = '8080'
+        TRIVY_REPORT = 'trivy-report.html'
+        ZAP_REPORT = 'zap-report.html'
     }
-    
+
     stages {
-        stage('Checkout') {
+
+        stage('Checkout SCM') {
             steps {
                 checkout scm
-                echo 'Code checkout complete'
             }
         }
-        
-       stage('SAST - SonarQube Analysis') {
-  steps {
-    withSonarQubeEnv('SonarQube') {
-      withCredentials([string(credentialsId: 'sqa_7df16d680b5187bcd44e8b324327aca0dbe3d24b', variable: 'SONAR_TOKEN')]) {
-        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-          sh '''
-          sonar-scanner \
-            -Dsonar.projectKey=simple-todo-app \
-            -Dsonar.sources=. \
-            -Dsonar.host.url=http://localhost:9000 \
-            -Dsonar.login=$SONAR_TOKEN
-          '''
+
+        stage('Wait for SonarQube') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                    script {
+                        echo "Waiting for SonarQube to become healthy..."
+                        retry(5) {
+                            sleep 10
+                            def health = sh(
+                                script: '''
+                                    curl -s -u $SONAR_TOKEN: http://localhost:9000/api/system/health | grep -o '"health":"GREEN"'
+                                ''',
+                                returnStatus: true
+                            )
+                            if (health != 0) {
+                                error("SonarQube is not ready yet.")
+                            }
+                        }
+                    }
+                }
+            }
         }
-      }
-    }
-    waitForQualityGate abortPipeline: true
-  }
-}
-        
+
+        stage('SAST - SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                        sh '''
+                        sonar-scanner \
+                          -Dsonar.projectKey=simple-todo-app \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=http://localhost:9000 \
+                          -Dsonar.login=$SONAR_TOKEN
+                        '''
+                    }
+                }
+                waitForQualityGate abortPipeline: true
+            }
+        }
+
         stage('SCA - Dependency Check') {
             steps {
-                dependencyCheck additionalArguments: '--scan ./ --format HTML --out dependency-check-report.html', odcInstallation: 'OWASP-Dependency-Check'
-                publishHTML([
-                    allowMissing: false,
-                    alwaysLinkToLastBuild: true,
-                    keepAll: true,
-                    reportDir: './',
-                    reportFiles: 'dependency-check-report.html',
-                    reportName: 'Dependency Check Report'
-                ])
-                echo 'Dependency check complete'
+                sh '''
+                dependency-check.sh --project "simple-todo-app" \
+                  --format HTML --out dependency-check-report \
+                  --scan .
+                '''
             }
         }
-        
+
         stage('Build Docker Image') {
             steps {
-                sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
-                echo 'Docker image built'
+                sh 'docker build -t $DOCKER_IMAGE .'
             }
         }
-        
-        stage('Container Security Scan') {
+
+        stage('Container Security Scan - Trivy') {
             steps {
-                sh """
-                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                  aquasec/trivy image \
-                  --format template \
-                  --template '@/contrib/html.tpl' \
-                  --output trivy-report.html \
-                  ${DOCKER_IMAGE}:${DOCKER_TAG}
-                """
-                publishHTML([
-                    allowMissing: false,
-                    alwaysLinkToLastBuild: true,
-                    keepAll: true,
-                    reportDir: './',
-                    reportFiles: 'trivy-report.html',
-                    reportName: 'Trivy Security Report'
-                ])
-                echo 'Container security scan complete'
+                sh '''
+                trivy image --format template --template "@/contrib/html.tpl" \
+                  -o $TRIVY_REPORT $DOCKER_IMAGE
+                '''
             }
         }
-        
-        stage('Deploy for Testing') {
+
+        stage('Run App for Testing') {
             steps {
-                sh "docker stop ${DOCKER_IMAGE} || true"
-                sh "docker rm ${DOCKER_IMAGE} || true"
-                sh "docker run -d --name ${DOCKER_IMAGE} -p ${APP_PORT}:8080 ${DOCKER_IMAGE}:${DOCKER_TAG}"
-                echo 'Application deployed for testing'
+                sh '''
+                docker run -d -p 5000:5000 --name test-container $DOCKER_IMAGE
+                sleep 10
+                '''
             }
         }
-        
+
         stage('DAST - OWASP ZAP Scan') {
             steps {
-                sh """
-                docker run --rm -v \$(pwd):/zap/wrk/:rw owasp/zap2docker-stable zap-baseline.py \
-                  -t http://host.docker.internal:${APP_PORT} \
-                  -r zap-report.html
-                """
-                publishHTML([
-                    allowMissing: false,
-                    alwaysLinkToLastBuild: true,
-                    keepAll: true,
-                    reportDir: './',
-                    reportFiles: 'zap-report.html',
-                    reportName: 'ZAP Security Report'
-                ])
-                echo 'DAST scan complete'
+                sh '''
+                zap-baseline.py -t http://localhost:5000 -r $ZAP_REPORT || true
+                '''
             }
         }
     }
-    
+
     post {
         always {
-            echo 'Pipeline execution complete'
-        }
-        success {
-            echo 'Pipeline succeeded!'
-        }
-        failure {
-            echo 'Pipeline failed!'
+            // Clean up the test container
+            sh '''
+            docker stop test-container || true
+            docker rm test-container || true
+            '''
+
+            // Publish reports
+            publishHTML([
+                reportDir: 'dependency-check-report',
+                reportFiles: 'dependency-check-report.html',
+                reportName: 'OWASP Dependency Check'
+            ])
+            publishHTML([
+                reportDir: '.',
+                reportFiles: "$TRIVY_REPORT",
+                reportName: 'Trivy Scan'
+            ])
+            publishHTML([
+                reportDir: '.',
+                reportFiles: "$ZAP_REPORT",
+                reportName: 'ZAP Baseline Scan'
+            ])
         }
     }
 }
