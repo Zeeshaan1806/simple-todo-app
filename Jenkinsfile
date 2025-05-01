@@ -15,20 +15,16 @@ pipeline {
             }
         }
         
-        stage('SAST - SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh '''
-                    sonar-scanner \
-                      -Dsonar.projectKey=simple-todo-app \
-                      -Dsonar.sources=. \
-                      -Dsonar.host.url=http://localhost:9000 \
-                      -Dsonar.login=$SONAR_TOKEN
-                    '''
-                }
-                echo 'SonarQube analysis complete'
+stage('SAST - SonarQube Analysis') {
+    steps {
+        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+            withSonarQubeEnv('SonarQube') {
+                sh 'sonar-scanner -Dsonar.login=$SONAR_TOKEN'
             }
         }
+        echo 'SonarQube analysis complete'
+    }
+}
         
         stage('SCA - Dependency Check') {
             steps {
