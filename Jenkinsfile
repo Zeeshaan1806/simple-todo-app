@@ -2,13 +2,11 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = 'simple-todo-app'
-        TRIVY_REPORT = 'trivy-report.html'
-        ZAP_REPORT = 'zap-report.html'
+        SONAR_URL = 'http://localhost:9000'
+        SONAR_TOKEN = credentials('sonar-token')
     }
 
     stages {
-
         stage('Checkout SCM') {
             steps {
                 checkout scm
@@ -17,119 +15,83 @@ pipeline {
 
         stage('Wait for SonarQube') {
             steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    script {
+                script {
+                    def isWindows = isUnix() == false
+                    retry(10) {
                         echo "Waiting for SonarQube to become healthy..."
-                        retry(5) {
-                            sleep 10
-                            def health = sh(
-                                script: '''
-                                    curl -s -u $SONAR_TOKEN: http://localhost:9000/api/system/health | grep -o '"health":"GREEN"'
-                                ''',
-                                returnStatus: true
-                            )
-                            if (health != 0) {
-                                error("SonarQube is not ready yet.")
-                            }
+                        if (isWindows) {
+                            bat """
+                                curl -f %SONAR_URL%/api/system/health || exit 1
+                            """
+                        } else {
+                            sh """
+                                curl -f ${env.SONAR_URL}/api/system/health || exit 1
+                            """
+                        }
+                        sleep 10
+                    }
+                }
+            }
+        }
+
+        stage('Run SonarQube Scan') {
+            steps {
+                withSonarQubeEnv('MySonarQubeServer') {
+                    script {
+                        def isWindows = isUnix() == false
+                        if (isWindows) {
+                            bat 'mvn clean verify sonar:sonar'
+                        } else {
+                            sh 'mvn clean verify sonar:sonar'
                         }
                     }
                 }
             }
         }
 
-        stage('SAST - SonarQube Analysis') {
+        stage('Run OWASP Dependency-Check') {
             steps {
-                withSonarQubeEnv('SonarQube') {
-                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                        sh '''
-                        sonar-scanner \
-                          -Dsonar.projectKey=simple-todo-app \
-                          -Dsonar.sources=. \
-                          -Dsonar.host.url=http://localhost:9000 \
-                          -Dsonar.login=$SONAR_TOKEN
-                        '''
+                script {
+                    def isWindows = isUnix() == false
+                    if (isWindows) {
+                        bat 'dependency-check.bat --project simple-todo-app --scan . --format ALL --out reports'
+                    } else {
+                        sh './dependency-check.sh --project simple-todo-app --scan . --format ALL --out reports'
                     }
                 }
-                waitForQualityGate abortPipeline: true
             }
         }
 
-        stage('SCA - Dependency Check') {
+        stage('Run Trivy Scan') {
             steps {
-                sh '''
-                dependency-check.sh --project "simple-todo-app" \
-                  --format HTML --out dependency-check-report \
-                  --scan .
-                '''
+                script {
+                    def isWindows = isUnix() == false
+                    if (isWindows) {
+                        bat 'trivy fs --exit-code 0 --format table .'
+                    } else {
+                        sh 'trivy fs --exit-code 0 --format table .'
+                    }
+                }
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Run OWASP ZAP Scan') {
             steps {
-                sh 'docker build -t $DOCKER_IMAGE .'
-            }
-        }
-
-        stage('Container Security Scan - Trivy') {
-            steps {
-                sh '''
-                trivy image --format template --template "@/contrib/html.tpl" \
-                  -o $TRIVY_REPORT $DOCKER_IMAGE
-                '''
-            }
-        }
-
-        stage('Run App for Testing') {
-            steps {
-                sh '''
-                docker run -d -p 5000:5000 --name test-container $DOCKER_IMAGE
-                sleep 10
-                '''
-            }
-        }
-
-        stage('DAST - OWASP ZAP Scan') {
-            steps {
-                sh '''
-                zap-baseline.py -t http://localhost:5000 -r $ZAP_REPORT || true
-                '''
+                script {
+                    def isWindows = isUnix() == false
+                    if (isWindows) {
+                        bat 'zap.bat -quickurl http://localhost:3000 -quickout zap-report.html'
+                    } else {
+                        sh 'zap.sh -quickurl http://localhost:3000 -quickout zap-report.html'
+                    }
+                }
             }
         }
     }
 
     post {
         always {
-            // Clean up the test container
-            sh '''
-            docker stop test-container || true
-            docker rm test-container || true
-            '''
-
-            // Publish reports
-            publishHTML([
-                reportDir: 'dependency-check-report',
-                reportFiles: 'dependency-check-report.html',
-                reportName: 'OWASP Dependency Check',
-                allowMissing: true,
-                keepAll: true,
-                alwaysLinkToLastBuild: true
-            ])
-            publishHTML([
-                reportDir: '.',
-                reportFiles: "${TRIVY_REPORT}",
-                reportName: 'Trivy Scan',
-                allowMissing: true,
-                keepAll: true,
-                alwaysLinkToLastBuild: true
-            ])
-            publishHTML([
-                reportDir: '.',
-                reportFiles: "${ZAP_REPORT}",
-                reportName: 'ZAP Baseline Scan',
-                allowMissing: true,
-                keepAll: true,
-                alwaysLinkToLastBuild: true
-            ])
+            archiveArtifacts artifacts: '**/reports/**/*, zap-report.html', allowEmptyArchive: true
         }
     }
 }
