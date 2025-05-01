@@ -1,12 +1,12 @@
 pipeline {
     agent any
-    
+
     environment {
         DOCKER_IMAGE = 'simple-todo-app'
         DOCKER_TAG = "${env.BUILD_NUMBER}"
         APP_PORT = '8080'
     }
-    
+
     stages {
         stage('Checkout') {
             steps {
@@ -14,18 +14,18 @@ pipeline {
                 echo 'Code checkout complete'
             }
         }
-        
-stage('SAST - SonarQube Analysis') {
-    steps {
-        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-            withSonarQubeEnv('SonarQube') {
-                sh 'sonar-scanner -Dsonar.login=$SONAR_TOKEN'
+
+        stage('SAST - SonarQube Analysis') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                    withSonarQubeEnv('SonarQube') {
+                        sh 'sonar-scanner -Dsonar.login=$SONAR_TOKEN'
+                    }
+                }
+                echo 'SonarQube analysis complete'
             }
         }
-        echo 'SonarQube analysis complete'
-    }
-}
-        
+
         stage('SCA - Dependency Check') {
             steps {
                 dependencyCheck additionalArguments: '--scan ./ --format HTML --out dependency-check-report.html', odcInstallation: 'OWASP-Dependency-Check'
@@ -40,14 +40,14 @@ stage('SAST - SonarQube Analysis') {
                 echo 'Dependency check complete'
             }
         }
-        
+
         stage('Build Docker Image') {
             steps {
                 sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
                 echo 'Docker image built'
             }
         }
-        
+
         stage('Container Security Scan') {
             steps {
                 sh """
@@ -69,7 +69,7 @@ stage('SAST - SonarQube Analysis') {
                 echo 'Container security scan complete'
             }
         }
-        
+
         stage('Deploy for Testing') {
             steps {
                 sh "docker stop ${DOCKER_IMAGE} || true"
@@ -78,7 +78,7 @@ stage('SAST - SonarQube Analysis') {
                 echo 'Application deployed for testing'
             }
         }
-        
+
         stage('DAST - OWASP ZAP Scan') {
             steps {
                 sh """
@@ -98,7 +98,7 @@ stage('SAST - SonarQube Analysis') {
             }
         }
     }
-    
+
     post {
         always {
             echo 'Pipeline execution complete'
