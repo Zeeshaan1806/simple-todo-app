@@ -98,29 +98,72 @@ pipeline {
     }
 
     post {
-        always {
-            // Clean up the test container
-            sh '''
-            docker stop test-container || true
-            docker rm test-container || true
-            '''
+    always {
+        // Clean up the test container
+        sh '''
+        docker stop test-container || true
+        docker rm test-container || true
+        '''
 
-            // Publish reports
-            publishHTML([
-                reportDir: 'dependency-check-report',
-                reportFiles: 'dependency-check-report.html',
-                reportName: 'OWASP Dependency Check'
-            ])
-            publishHTML([
-                reportDir: '.',
-                reportFiles: "$TRIVY_REPORT",
-                reportName: 'Trivy Scan'
-            ])
-            publishHTML([
-                reportDir: '.',
-                reportFiles: "$ZAP_REPORT",
-                reportName: 'ZAP Baseline Scan'
-            ])
-        }
+        // Publish reports
+        publishHTML([
+            reportDir: 'dependency-check-report',
+            reportFiles: 'dependency-check-report.html',
+            reportName: 'OWASP Dependency Check',
+            allowMissing: true,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+        ])
+        publishHTML([
+            reportDir: '.',
+            reportFiles: "${TRIVY_REPORT}",
+            reportName: 'Trivy Scan',
+            allowMissing: true,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+        ])
+        publishHTML([
+            reportDir: '.',
+            reportFiles: "${ZAP_REPORT}",
+            reportName: 'ZAP Baseline Scan',
+            allowMissing: true,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+        ])
+    }
+}
+post {
+    always {
+        // Clean up the test container
+        sh '''
+        docker stop test-container || true
+        docker rm test-container || true
+        '''
+
+        // Publish reports
+        publishHTML([
+            reportDir: 'dependency-check-report',
+            reportFiles: 'dependency-check-report.html',
+            reportName: 'OWASP Dependency Check',
+            allowMissing: true,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+        ])
+        publishHTML([
+            reportDir: '.',
+            reportFiles: "${TRIVY_REPORT}",
+            reportName: 'Trivy Scan',
+            allowMissing: true,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+        ])
+        publishHTML([
+            reportDir: '.',
+            reportFiles: "${ZAP_REPORT}",
+            reportName: 'ZAP Baseline Scan',
+            allowMissing: true,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+        ])
     }
 }
